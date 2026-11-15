@@ -1,12 +1,12 @@
 /*
- * Claude2PDF v5.1 — configurable, validated, browser-console PDF export.
+ * Claude2PDF v7 — configurable, validated, browser-console PDF export.
  * Edit the options in the call at the END of this file, then paste the
  * entire file into DevTools Console while a Claude chat is open.
  * Printing starts automatically after pasting and pressing Enter.
  *
- * Help (after loading):     imprimirClaudePDF.help();
- * Validate (after loading): imprimirClaudePDF.validate({ page: 'A4', retries: 2 });
- * Cancel an active scan:    cancelarImpresionClaudePDF();
+ * Help (after loading):     printClaudePDF.help();
+ * Validate (after loading): printClaudePDF.validate({ page: 'A4', retries: 2 });
+ * Cancel an active scan:    cancelClaudePDF();
  *
  * Defaults: portrait A4, white page, 5 mm margins, one H1 title.
  * IMPORTANT: Browser-generated headers, footers and page numbers must be
@@ -90,7 +90,7 @@
     if (!isRecord) {
       throw new TypeError(
         '[Claude PDF] Options must be a plain object. Example: ' +
-        'imprimirClaudePDF({ page: "A4", margin: "5mm", theme: "light" }).'
+        'printClaudePDF({ page: "A4", margin: "5mm", theme: "light" }).'
       );
     }
 
@@ -117,7 +117,7 @@
     }
     if (errors.length) {
       throw new TypeError(`[Claude PDF] Invalid options (${errors.length}):\n${errors.join('\n')}\n` +
-        'Run imprimirClaudePDF.help() to list all accepted options.');
+        'Run printClaudePDF.help() to list all accepted options.');
     }
 
     const result = { ...CONFIG, ...options };
@@ -142,8 +142,8 @@
       description: rule.meaning
     }));
     console.table(data);
-    console.info('Usage: imprimirClaudePDF({ page: "A4", margin: "5mm", theme: "light", retries: 2 });');
-    console.info('Validate without printing: imprimirClaudePDF.validate({ page: "A4" });');
+    console.info('Usage: printClaudePDF({ page: "A4", margin: "5mm", theme: "light", retries: 2 });');
+    console.info('Validate without printing: printClaudePDF.validate({ page: "A4" });');
     console.info('Note: browser-generated headers and footers must be disabled in the print dialog.');
     return data;
   }
@@ -259,26 +259,49 @@
     return `${i}:${position}:${safeText(el.textContent).slice(0, 100)}`;
   }
 
+  // Keep the dimensions of file previews, SVGs, icons, and card content.
+  // Remove clipping only from known expandable or scrollable text containers.
   function applyLightStyles(node) {
     for (const el of [node, ...node.querySelectorAll('*')]) {
       if (el.hasAttribute?.('data-mode')) el.setAttribute('data-mode', 'light');
-      const s = el.style;
-      if (!s) continue;
-      for (const p of ['height', 'max-height', 'min-height', 'mask-image', '-webkit-mask-image', 'clip-path', 'contain']) {
-        // For ordinary small icons, preserve declared sizes; only remove limits on containers.
-        if (p.includes('height') && (el.matches('img,svg,canvas,video') || el.closest('svg'))) continue;
-        s.removeProperty(p);
+      const style = el.style;
+      if (!style) continue;
+      const canUnclip = el.matches([
+        '[data-testid="user-message"]',
+        '[data-cds="TurnStatus"]',
+        '[data-cds="TurnStatusStep"]',
+        '[class*="max-h-"]',
+        '[class*="overflow-y-"]',
+        '.code-block__code',
+        'pre'
+      ].join(','));
+      if (canUnclip) {
+        for (const property of ['max-height', 'min-height', 'mask-image', '-webkit-mask-image']) {
+          style.removeProperty(property);
+        }
+        // Only undo explicit heights when they are text-container clipping.
+        if (el.matches('[class*="max-h-"],[data-testid="user-message"],pre')) {
+          style.removeProperty('height');
+        }
+        if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY)) {
+          style.removeProperty('overflow-y');
+        }
       }
-      if (/^(hidden|clip|auto|scroll)$/.test(s.overflowY)) s.removeProperty('overflow-y');
-      if (/^(hidden|clip|auto|scroll)$/.test(s.overflowX)) s.removeProperty('overflow-x');
-      if (/^(sticky|fixed)$/.test(s.position)) s.position = 'static';
-      const c = s.color;
-      if (c && !el.closest('svg')) {
-        const value = rgb(c);
-        if (value && contrast(value) < 4.5) s.setProperty('color', accessibleColor(c), 'important');
+      if (/^(sticky|fixed)$/.test(style.position)) style.position = 'static';
+      const foreground = style.color;
+      if (foreground && !el.closest('svg')) {
+        const parsed = rgb(foreground);
+        if (parsed && contrast(parsed) < 4.5) {
+          style.setProperty('color', accessibleColor(foreground), 'important');
+        }
       }
-      const bg = rgb(s.backgroundColor);
-      if (bg && lum(bg) < .22 && !el.closest('svg')) s.removeProperty('background-color');
+      // Do not discard thumbnail backgrounds or user-selected highlights.
+      const background = rgb(style.backgroundColor);
+      if (background && lum(background) < .22 &&
+          !el.closest('svg,figure,[data-testid="file-thumbnail"]') &&
+          !el.matches('img,canvas,video')) {
+        style.removeProperty('background-color');
+      }
     }
   }
 
@@ -380,10 +403,10 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
   height:auto!important;max-height:none!important;width:100%!important;
   margin:0 0 22px!important;padding:0 0 5px!important;break-inside:auto!important; }
 .cp-entry > .cp-body { display:flow-root!important;max-width:100%!important;width:100%!important;
-  min-width:0!important;overflow:visible!important;overflow-wrap:anywhere!important; }
+  min-width:0!important;overflow:visible!important;overflow-wrap:normal!important; }
 .cp-entry[data-role="user"] > .cp-body { max-width:100%!important; }
 .cp-entry .cp-body *:not(svg):not(path):not(line):not(circle):not(rect):not(polygon):not(polyline) {
-  box-sizing:border-box;min-width:0; }
+  box-sizing:border-box; }
 .cp-entry :is(.text-primary,.text-heading,[data-cds="Prose"],.prose) { color:${ink}!important; }
 .cp-entry :is(.text-secondary,.text-tertiary,.text-muted) {color:${muted}!important;}
 .cp-entry :is([data-cds="TurnStatus"],[data-cds="TurnStatusStep"]) {
@@ -402,7 +425,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
   margin-left:auto!important;overflow:visible!important; }
 .cp-entry[data-role="user"] .group\\/bubble :is(p,span,div) {color:${ink};}
 .cp-entry :is(h1,h2,h3,h4,h5,h6) {color:${ink}!important;break-after:avoid!important;}
-.cp-entry :is(p,li,blockquote,td,th) {overflow-wrap:anywhere;orphans:2;widows:2;}
+.cp-entry :is(p,li,blockquote,td,th) {overflow-wrap:break-word;word-break:normal;orphans:2;widows:2;}
 .cp-entry :is(pre,pre *,code,[data-code-line-group]) {
   font-family:"DejaVu Sans Mono",Consolas,"Liberation Mono",monospace!important;
   font-size:10.8px!important;line-height:1.43!important;
@@ -426,6 +449,18 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
 .cp-entry :is([data-cds="Prose"],.prose) {max-height:none!important;overflow:visible!important;}
 .cp-entry [data-cds="Icon"] {font-family:inherit;}
 .cp-entry iframe[data-cp-iframe] {border:1px solid ${border};border-radius:9px;max-width:100%!important;}
+/* Only apply these classes when a measured print layout actually collapses. */
+.cp-entry .cp-print-reflow-parent {display:flex!important;flex-wrap:wrap!important;
+  justify-content:flex-start!important;align-items:flex-start!important;gap:9px!important;
+  max-width:100%!important;}
+.cp-entry .cp-print-reflow-child {flex:1 1 250px!important;
+  width:auto!important;min-width:min(100%,220px)!important;max-width:100%!important;
+  overflow-wrap:break-word!important;word-break:normal!important;}
+.cp-entry .cp-print-reflow-item {width:100%!important;min-width:min(100%,220px)!important;
+  max-width:100%!important;overflow-wrap:break-word!important;word-break:normal!important;}
+.cp-entry .cp-print-reflow-grid {display:grid!important;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr))!important;
+  gap:10px!important;max-width:100%!important;}
 .cp-artifact {display:block!important;max-width:100%!important;width:100%;
   margin:9px 0 13px!important;padding:0!important;border-radius:10px!important;
   background:${bg}!important;overflow:hidden!important;}
@@ -446,6 +481,51 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
   .cp-warning button {display:none!important;}
 }
 `;
+  }
+
+  // A 1920px desktop layout can leave flex/grid search cards 20px wide
+  // when transplanted into an A4 page. Repair ONLY measured narrow cards,
+  // rather than globally changing every nested flexbox or wrapping words.
+  function repairNarrowPrintLayouts(doc, main) {
+    let repairs = 0;
+    const pageWidth = main.getBoundingClientRect().width;
+    if (pageWidth < 220) return repairs;
+    const candidates = [...main.querySelectorAll('a,p,li,div,section,article')]
+      .filter(el => {
+        if (el.closest('pre,code,svg,.cp-warning,.cp-author')) return false;
+        if (el.querySelector('pre,code,svg,table')) return false;
+        const txt = safeText(el.textContent);
+        if (txt.length < 48 || el.getClientRects().length === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width >= 8 && r.width < 110 && r.height > 40;
+      })
+      .sort((a,b) => a.querySelectorAll('*').length - b.querySelectorAll('*').length);
+
+    for (const target of candidates) {
+      let child = target;
+      if (child.getBoundingClientRect().width >= 150) continue;
+      for (let level = 0; level < 10 && child.parentElement; level++) {
+        const parent = child.parentElement;
+        if (parent === main || parent.classList.contains('cp-entry')) break;
+        const parentWidth = parent.getBoundingClientRect().width;
+        if (parentWidth >= 220 && child.getBoundingClientRect().width < 135) {
+          const display = doc.defaultView.getComputedStyle(parent).display;
+          if (display.includes('grid')) {
+            parent.classList.add('cp-print-reflow-grid');
+            child.classList.add('cp-print-reflow-item');
+          } else if (display.includes('flex')) {
+            parent.classList.add('cp-print-reflow-parent');
+            child.classList.add('cp-print-reflow-child');
+          } else {
+            child.classList.add('cp-print-reflow-item');
+          }
+          repairs++;
+          break;
+        }
+        child = parent;
+      }
+    }
+    return repairs;
   }
 
   // Screen capture is the only ordinary browser-console technique that can
@@ -551,7 +631,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     target.after(fig);
   }
 
-  window.imprimirClaudePDF = async function imprimirClaudePDF(options = {}) {
+  window.printClaudePDF = async function printClaudePDF(options = {}) {
     // Validation happens BEFORE requesting screen access, opening tabs or
     // scrolling. Never silently replace an invalid parameter with a default.
     let cfg;
@@ -589,7 +669,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     let total = 0, clicked = 0, previews = 0, unresolvedArtifacts = 0;
     let cancel = false;
     const attempted = new Set();
-    window.cancelarImpresionClaudePDF = () => { cancel = true; };
+    window.cancelClaudePDF = () => { cancel = true; };
     function assertRunning() {
       if (cancel || out.closed) throw Error('Export canceled.');
     }
@@ -745,7 +825,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
         scroll.scrollTop = restore.top;
       } catch (_) {}
       capture?.stream.getTracks().forEach(t => t.stop());
-      delete window.cancelarImpresionClaudePDF;
+      delete window.cancelClaudePDF;
       delete window.__claudePdfLightMode;
     }
     if (out.closed) return { error: 'Window closed' };
@@ -823,6 +903,9 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     );
     await timeout(Promise.allSettled(sheets), 5000);
     await timeout(doc.fonts?.ready || Promise.resolve(), 5000);
+    // Perform after site CSS and fonts are ready; two passes cover nested cards.
+    const layoutRepairs = repairNarrowPrintLayouts(doc, main);
+    if (layoutRepairs && cfg.debug) log(`Reflowed ${layoutRepairs} narrow print blocks.`);
     await timeout(Promise.allSettled([...doc.images].map(img => new Promise(resolve => {
       img.loading = 'eager';
       if (img.complete) return resolve();
@@ -850,7 +933,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
       expanded: clicked, artifactsSeen: previews, failedImages,
       artifactsNotCaptured: unresolvedArtifacts, missing: gaps };
   };
-  window.imprimirClaudePDF.validate = function (options = {}) {
+  window.printClaudePDF.validate = function (options = {}) {
     try {
       return validateOptions(options);
     } catch (err) {
@@ -858,21 +941,18 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
       throw err;
     }
   };
-  window.imprimirClaudePDF.help = helpOptions;
-  // Backwards-compatible helpers from the previous Spanish-language release.
-  window.imprimirClaudePDF.validar = window.imprimirClaudePDF.validate;
-  window.imprimirClaudePDF.ayuda = window.imprimirClaudePDF.help;
-  window.imprimirClaudePDF.defaults = CONFIG;
-  log('Function registered: imprimirClaudePDF({ page:"A4", margin:"5mm", theme:"light" }).');
-  log('Help and parameters: imprimirClaudePDF.help().');
+  window.printClaudePDF.help = helpOptions;
+  window.printClaudePDF.defaults = CONFIG;
+  log('Function registered: printClaudePDF({ page:"A4", margin:"5mm", theme:"light" }).');
+  log('Help and parameters: printClaudePDF.help().');
 })();
 
 // ---------------------------------------------------------------------------
 // USER CONFIGURATION — edit these values before pasting into the console.
 // This call runs automatically, so there is no second command to enter.
-// Run imprimirClaudePDF.help() afterwards to see all supported options.
+// Run printClaudePDF.help() afterwards to see all supported options.
 // ---------------------------------------------------------------------------
-imprimirClaudePDF({
+printClaudePDF({
   page: "A4",
   margin: "5mm",
   theme: "light",

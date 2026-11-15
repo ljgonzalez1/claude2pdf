@@ -1,11 +1,53 @@
 # Print a Claude chat
 
-**Script:** [`print-cloud-chat.js`](./print-cloud-chat.js) (in this folder).
+**Script location:** [`./print-cloud-chat.js`](./print-cloud-chat.js) (this folder).
 
-1. Open the Claude conversation.
-2. Open **Developer Tools → Console** (`F12` → **Console**, or `Ctrl+Shift+J`; macOS: `Cmd+Option+J`).
-3. Open the script above and edit the `imprimirClaudePDF({ ... })` options **at the very end** if needed.
-4. Copy **all** of the script into the console input (`>`), then press **Enter**. Printing starts automatically.
-5. Choose **Save as PDF**; turn **Headers and footers** off and **Background graphics** on.
+1. Open your conversation on [Claude](https://claude.ai/).
+2. Edit the `printClaudePDF({ ... })` call **at the end** of the script.
+3. Copy the **whole script**, open **Developer Tools → Console** (`F12` → Console, `Ctrl+Shift+J`, or `Cmd+Option+J` on macOS), click the `>` prompt, paste, and press **Enter**.
+4. Select **Save as PDF**. Turn off **Headers and footers** and turn on **Background graphics**.
 
-Options: [`PARAMETERS.md`](./PARAMETERS.md) or `imprimirClaudePDF.help()`.
+The script runs automatically when pasted. Edit these options at the **end of the JavaScript file**:
+
+```javascript
+printClaudePDF({
+  page: "A4",
+  margin: "5mm",
+  theme: "light",
+  scan: true,
+  retries: 2,
+  allowPartial: false,
+  printAutomatically: true
+}).catch(error => console.error("[Claude PDF] Export failed:", error));
+```
+
+## Options
+
+All options are optional. Bad values or unknown names produce an error listing accepted values. You can also run `printClaudePDF.help()` or `printClaudePDF.validate({ page: "A4" })` in the console after loading the script.
+
+| Option | Default | Accepted values / effect |
+|---|---|---|
+| `page` | `"A4"` | `"A3"`, `"A4"`, `"A5"`, `"Letter"`, `"Legal"` — paper size |
+| `margin` | `"5mm"` | `"0"` or 1–4 nonnegative lengths (`mm`, `cm`, `pt`, `in`, `px`) |
+| `landscape` | `false` | Boolean — horizontal paper |
+| `theme` | `"light"` | `"light"`, `"dark"`, `"current"` |
+| `title` | `true` | Boolean — add chat title as `<h1>` |
+| `showMessageRoles` | `true` | Boolean — show You / Claude labels |
+| `copySiteStyles` | `true` | Boolean — reuse Claude's CSS |
+| `scan` | `true` | Boolean — collect virtualized messages by scrolling |
+| `scrollDelay` | `125` | Integer `0–10000` — ms between scrolls |
+| `retries` | `3` | Integer `0–6` — additional history passes |
+| `maxScrollSteps` | `18000` | Integer `1–100000` — per-pass scroll limit |
+| `expand` | `true` | Boolean — open supported thoughts, steps, and show-more sections |
+| `expandDelay` | `75` | Integer `0–10000` — ms after expansion |
+| `maxExpansionClicks` | `18000` | Integer `0–100000` — expansion click limit |
+| `captureArtifacts` | `true` | Boolean — request tab capture for visible artifacts |
+| `artifactWait` | `850` | Integer `0–60000` — ms after opening a preview |
+| `maxArtifactPreviews` | `400` | Integer `0–5000` — artifact preview limit |
+| `allowPartial` | `false` | Boolean — allow automatic printing with missing content |
+| `printAutomatically` | `true` | Boolean — show print dialog when ready |
+| `imageWait` | `14000` | Integer `0–120000` — image load wait in ms |
+| `debug` | `false` | Boolean — verbose console logging |
+| `light` | — | Deprecated Boolean alias for `theme`; avoid using both |
+
+To cancel a scan, run `cancelClaudePDF()` in the original tab. Browser-provided page numbers and headers/footers must be disabled manually; cross-origin and offscreen artifacts may not print exactly as displayed.
