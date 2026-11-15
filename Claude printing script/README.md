@@ -5,9 +5,9 @@
 1. Open your conversation on [Claude](https://claude.ai/).
 2. Edit the `printClaudePDF({ ... })` call **at the end** of the script.
 3. Copy the **whole script**, open **Developer Tools → Console** (`F12` → Console, `Ctrl+Shift+J`, or `Cmd+Option+J` on macOS), click the `>` prompt, paste, and press **Enter**.
-4. Select **Save as PDF**. Turn off **Headers and footers** and turn on **Background graphics**.
+4. A new tab displays **Loading…** while the original chat is scanned. The script then automatically opens the browser **Print** dialog. Select **Save as PDF**; disable **Headers and footers** and enable **Background graphics**.
 
-The script runs automatically when pasted. Edit these options at the **end of the JavaScript file**:
+The script works without screen sharing, screen recording, or permission prompts for artifacts. It runs automatically when pasted. Edit these options at the **end of the JavaScript file**:
 
 ```javascript
 printClaudePDF({
@@ -41,13 +41,13 @@ All options are optional. Bad values or unknown names produce an error listing a
 | `expand` | `true` | Boolean — open supported thoughts, steps, and show-more sections |
 | `expandDelay` | `75` | Integer `0–10000` — ms after expansion |
 | `maxExpansionClicks` | `18000` | Integer `0–100000` — expansion click limit |
-| `captureArtifacts` | `true` | Boolean — request tab capture for visible artifacts |
-| `artifactWait` | `850` | Integer `0–60000` — ms after opening a preview |
-| `maxArtifactPreviews` | `400` | Integer `0–5000` — artifact preview limit |
+| `captureArtifacts` | `true` | Boolean — preserve accessible iframe DOM as currently rendered, without screen-sharing permissions |
+| `artifactWait` | `850` | Integer `0–60000` — maximum wait for embedded frames to settle in the print tab |
+| `maxArtifactPreviews` | `400` | Integer `0–5000` — maximum embedded frames to preserve |
 | `allowPartial` | `false` | Boolean — allow automatic printing with missing content |
 | `printAutomatically` | `true` | Boolean — show print dialog when ready |
 | `imageWait` | `14000` | Integer `0–120000` — image load wait in ms |
 | `debug` | `false` | Boolean — verbose console logging |
 | `light` | — | Deprecated Boolean alias for `theme`; avoid using both |
 
-To cancel a scan, run `cancelClaudePDF()` in the original tab. Browser-provided page numbers and headers/footers must be disabled manually; cross-origin and offscreen artifacts may not print exactly as displayed.
+To cancel a scan, run `cancelClaudePDF()` in the original tab. The script never calls the screen-capture API. Cross-origin or offscreen artifacts cannot always be printed exactly as displayed, but their embedded frames are retained for the browser to print. The browser owns the printer destination: **Save as PDF cannot be preselected through `window.print()`**. Browser-provided page numbers and headers/footers must be disabled manually.

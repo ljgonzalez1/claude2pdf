@@ -1,5 +1,5 @@
 /*
- * Claude2PDF v7 — configurable, validated, browser-console PDF export.
+ * Claude2PDF v8 — automatic, permission-free, browser-console PDF export.
  * Edit the options in the call at the END of this file, then paste the
  * entire file into DevTools Console while a Claude chat is open.
  * Printing starts automatically after pasting and pressing Enter.
@@ -11,7 +11,9 @@
  * Defaults: portrait A4, white page, 5 mm margins, one H1 title.
  * IMPORTANT: Browser-generated headers, footers and page numbers must be
  * disabled manually in the print dialog (More settings > Headers and footers).
- * Cross-origin artifacts may require an explicitly authorized tab capture.
+ * Never requests screen sharing, screen recording, or display capture.
+ * Same-origin artifact frames can be frozen from their rendered DOM; cross-
+ * origin artifact frames must rely on the browser's native iframe printing.
  * A pixel-perfect snapshot of every interactive artifact is not guaranteed.
  * No third-party JS libraries or additional data-upload services are used.
  */
@@ -64,10 +66,10 @@
     expand: { accepted: 'true | false', test: boolean, meaning: 'Expand recognized reasoning, tool steps and show-more sections.' },
     expandDelay: { accepted: 'integer 0..10000 (milliseconds)', test: integer(0, 10000), meaning: 'Delay after an expansion click.' },
     maxExpansionClicks: { accepted: 'integer 0..100000', test: integer(0, 100000), meaning: 'Maximum total expansion clicks.' },
-    captureArtifacts: { accepted: 'true | false', test: boolean, meaning: 'Ask for permission to capture visible interactive-artifact previews.' },
-    artifactWait: { accepted: 'integer 0..60000 (milliseconds)', test: integer(0, 60000), meaning: 'Delay after opening an artifact preview.' },
-    maxArtifactPreviews: { accepted: 'integer 0..5000', test: integer(0, 5000), meaning: 'Maximum number of artifact previews attempted.' },
-    allowPartial: { accepted: 'true | false', test: boolean, meaning: 'Permit automatic printing even if messages or visuals are missing.' },
+    captureArtifacts: { accepted: 'true | false', test: boolean, meaning: 'Preserve accessible embedded artifact DOM in its current state; no screen-sharing permissions.' },
+    artifactWait: { accepted: 'integer 0..60000 (milliseconds)', test: integer(0, 60000), meaning: 'Maximum time to allow print-tab embedded artifact frames to settle.' },
+    maxArtifactPreviews: { accepted: 'integer 0..5000', test: integer(0, 5000), meaning: 'Maximum number of embedded artifact frames to preserve.' },
+    allowPartial: { accepted: 'true | false', test: boolean, meaning: 'Permit automatic printing even if conversation rows are missing or the total cannot be verified.' },
     printAutomatically: { accepted: 'true | false', test: boolean, meaning: 'Open the print dialog when the capture finishes successfully.' },
     imageWait: { accepted: 'integer 0..120000 (milliseconds)', test: integer(0, 120000), meaning: 'Maximum wait for print-preview images to load.' },
     debug: { accepted: 'true | false', test: boolean, meaning: 'Enable verbose console reporting.' },
@@ -363,7 +365,7 @@
     cloned.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
     cloned.querySelectorAll('details').forEach(el => el.open = true);
     cloned.querySelectorAll('iframe').forEach(f => {
-      // Same-origin frames may print as embedded pages; cross-origin is handled by screenshots.
+      // Keep embedded pages for browser printing; no display capture is used.
       f.loading = 'eager';
       f.setAttribute('data-cp-iframe', '');
     });
@@ -478,7 +480,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
 @media print {
   html,body,.cp-chat,.cp-entry {overflow:visible!important;}
   .cp-entry {break-inside:auto!important;}
-  .cp-warning button {display:none!important;}
+  .cp-warning {display:none!important;}
 }
 `;
   }
@@ -528,112 +530,74 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     return repairs;
   }
 
-  // Screen capture is the only ordinary browser-console technique that can
-  // capture pixels from a cross-origin, stateful artifact as currently rendered.
-  // Explicit browser permission is required on every invocation.
-  function beginTabCapture() {
-    if (!navigator.mediaDevices?.getDisplayMedia) return Promise.resolve(null);
-    try {
-      return navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: 'browser', frameRate: 10 },
-        audio: false, preferCurrentTab: true, selfBrowserSurface: 'include',
-        monitorTypeSurfaces: 'exclude', surfaceSwitching: 'exclude'
-      }).then(async stream => {
-        const track = stream.getVideoTracks()[0];
-        const surface = track?.getSettings?.()?.displaySurface;
-        if (surface && surface !== 'browser') {
-          stream.getTracks().forEach(t => t.stop());
-          log('Share the Claude browser tab, not the entire screen.');
-          return null;
-        }
-        const video = document.createElement('video');
-        video.srcObject = stream; video.muted = true; video.playsInline = true;
-        await video.play();
-        const start = Date.now();
-        while (!video.videoWidth && Date.now() - start < 2500) await delay(60);
-        if (!video.videoWidth) { stream.getTracks().forEach(t => t.stop()); return null; }
-        return { stream, video };
-      }).catch(err => {
-        log('Visual-capture permission was not granted:', err.message);
-        return null;
-      });
-    } catch (err) { log('Visual capture is unavailable:', err.message); return Promise.resolve(null); }
-  }
-  function snapshotRectangle(capture, element) {
-    if (!capture?.video?.videoWidth || !visible(element)) return null;
-    const rect = element.getBoundingClientRect();
-    const left = Math.max(0, rect.left), top = Math.max(0, rect.top);
-    const right = Math.min(innerWidth, rect.right), bottom = Math.min(innerHeight, rect.bottom);
-    if (right - left < 100 || bottom - top < 80) return null;
-    const video = capture.video;
-    const sx = video.videoWidth / innerWidth, sy = video.videoHeight / innerHeight;
-    const w = Math.min(2400, Math.round((right - left) * sx));
-    const h = Math.min(2400, Math.round((bottom - top) * sy));
-    if (w < 100 || h < 80) return null;
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const context = canvas.getContext('2d', { alpha: false });
-    context.drawImage(video, left * sx, top * sy, (right - left) * sx, (bottom - top) * sy, 0, 0, w, h);
-    try { return { url: canvas.toDataURL('image/png'), width: w, height: h,
-      clipped: rect.top < 0 || rect.bottom > innerHeight || rect.left < 0 || rect.right > innerWidth }; }
-    catch (_) { return null; }
-  }
-  function previewIframe() {
-    const frames = [...document.querySelectorAll('iframe')].filter(f => {
-      const ref = (f.getAttribute('src') || '') + ' ' + (f.title || '');
-      if (!/claudeusercontent|artifact|artefacto|preview|vista previa/i.test(ref)) return false;
-      const r = f.getBoundingClientRect();
-      return visible(f) && r.width > 180 && r.height > 120 &&
-        r.left < innerWidth - 40 && r.right > 40 &&
-        r.top < innerHeight - 40 && r.bottom > 40;
-    });
-    frames.sort((a,b) => {
-      const score = el => /claudeusercontent|artifact|preview/i.test((el.src||'') + ' ' + (el.title||'')) ? 2 : 0;
-      return score(b) - score(a) || b.clientWidth*b.clientHeight-a.clientWidth*a.clientHeight;
-    });
-    return frames[0] || null;
-  }
-  function isPreviewCard(card) {
-    const text = safeText(card.textContent || '');
-    const name = safeText(card.querySelector('[data-testid="file-card-open"]')?.getAttribute('aria-label'));
-    return /\b(html|svg|react|web|artifact|artefacto|sitio|página web|app|website)\b/i.test(text + ' ' + name);
-  }
-  function captureVisibleEmbeddedFrames(source, clone, capture) {
-    const live = [...source.querySelectorAll('iframe')];
-    const copies = [...clone.querySelectorAll('iframe')];
-    let count = 0;
-    for (let i = 0; i < live.length; i++) {
-      const shot = snapshotRectangle(capture, live[i]);
-      if (!shot || !copies[i]) continue;
-      const img = document.createElement('img');
-      img.src = shot.url;
-      img.width = shot.width;
-      img.height = shot.height;
-      img.alt = 'Visible interactive content';
-      img.className = 'cp-snapshot';
-      copies[i].replaceWith(img);
-      count++;
+  // Best-effort preservation of already rendered iframe content.
+  // Same-origin iframe documents are serialized *after* their JS has rendered.
+  // Cross-origin frames cannot be inspected by a normal web page; keep their
+  // src/srcdoc for native browser printing without requesting any permissions.
+  function preserveEmbeddedFrames(source, cloned, cfg, allowance) {
+    const liveFrames = [...source.querySelectorAll('iframe')];
+    const printFrames = [...cloned.querySelectorAll('iframe')];
+    let attempted = 0, frozen = 0, unavailable = 0;
+    for (let i = 0; i < liveFrames.length && attempted < allowance; i++) {
+      const live = liveFrames[i], target = printFrames[i];
+      if (!target || !visible(live)) continue;
+      attempted++;
+      if (!cfg.captureArtifacts) continue;
+      try {
+        const frameDoc = live.contentDocument;
+        if (!frameDoc?.documentElement) { unavailable++; continue; }
+        const html = frameDoc.documentElement.cloneNode(true);
+        html.querySelectorAll('script,noscript').forEach(el => el.remove());
+        // Convert readable canvas pixels to a static image in the DOM copy.
+        const canvases = [...frameDoc.querySelectorAll('canvas')];
+        html.querySelectorAll('canvas').forEach((canvas, n) => {
+          try {
+            const img = frameDoc.createElement('img');
+            img.src = canvases[n].toDataURL('image/png');
+            img.width = canvases[n].width;
+            img.height = canvases[n].height;
+            img.alt = canvases[n].getAttribute('aria-label') || 'Artifact graphic';
+            canvas.replaceWith(img);
+          } catch (_) { /* Keep inaccessible canvas unchanged. */ }
+        });
+        const liveControls = frameDoc.querySelectorAll('input,textarea,select');
+        html.querySelectorAll('input,textarea,select').forEach((control, n) => {
+          const original = liveControls[n];
+          if (!original) return;
+          if (control.localName === 'textarea') control.textContent = original.value;
+          else if (control.localName === 'input') {
+            control.value = original.value;
+            control.setAttribute('value', original.value);
+            if (original.checked) control.setAttribute('checked', '');
+            else control.removeAttribute('checked');
+          } else if (control.localName === 'select') {
+            [...control.options].forEach((option, index) => {
+              option.selected = !!original.options[index]?.selected;
+            });
+          }
+        });
+        const head = html.querySelector('head') || html.insertBefore(frameDoc.createElement('head'), html.firstChild);
+        const base = frameDoc.createElement('base');
+        base.href = frameDoc.baseURI;
+        head.prepend(base);
+        // Setting srcdoc retains the rendered DOM without restarting its JS.
+        target.setAttribute('srcdoc', '<!doctype html>\n' + html.outerHTML);
+        target.removeAttribute('src');
+        target.setAttribute('sandbox', ''); // Do not execute scripts again.
+        const rect = live.getBoundingClientRect();
+        if (rect.width > 50) target.style.width = Math.round(rect.width) + 'px';
+        if (rect.height > 50) target.style.height = Math.round(rect.height) + 'px';
+        frozen++;
+      } catch (_) {
+        unavailable++; // Browser same-origin policy; preserve original iframe.
+      }
     }
-    return count;
-  }
-  function insertPreview(clone, idx, shot, title) {
-    const cards = clone.querySelectorAll('[data-testid="file-card-block"]');
-    const target = cards[idx] || clone.lastElementChild || clone;
-    const fig = document.createElement('figure'); fig.className = 'cp-artifact';
-    const img = document.createElement('img'); img.src = shot.url;
-    img.alt = `Artifact preview: ${title}`;
-    img.width = shot.width; img.height = shot.height; img.className = 'cp-snapshot';
-    const caption = document.createElement('figcaption');
-    caption.textContent = shot.clipped
-      ? 'Visible artifact preview (internally scrollable content may be cropped).'
-      : 'Artifact preview in its currently displayed state.';
-    fig.append(img, caption);
-    target.after(fig);
+    return { attempted, frozen, unavailable };
   }
 
   window.printClaudePDF = async function printClaudePDF(options = {}) {
-    // Validation happens BEFORE requesting screen access, opening tabs or
-    // scrolling. Never silently replace an invalid parameter with a default.
+    // Validation happens BEFORE opening the loading tab or scrolling.
+    // Never silently replace an invalid parameter with a default.
     let cfg;
     try {
       cfg = validateOptions(options);
@@ -643,8 +607,8 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     }
     if (!document.querySelector(LIST)) throw Error('Open a Claude conversation before running this function.');
 
-    // Ask before awaiting anything, to retain user activation in browsers.
-    const mediaPromise = cfg.captureArtifacts ? beginTabCapture() : Promise.resolve(null);
+    // Open the loading tab synchronously to preserve the browser user gesture.
+    // There are no screen-share calls, permission dialogs or camera requests.
     const out = window.open('', '_blank');
     if (!out) throw Error('Popup blocked. Allow popups for claude.ai and try again.');
     const doc = out.document;
@@ -661,12 +625,12 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
       if (el) el.textContent = message;
       if (cfg.debug) log(message);
     };
-    // Keep original tab active while reading and capturing its visual previews.
+    // Read the original Claude chat while the independent tab shows progress.
     try { window.focus(); } catch (_) {}
-    const capture = await mediaPromise;
     window.__claudePdfLightMode = cfg.light;
     const originals = new Map();
-    let total = 0, clicked = 0, previews = 0, unresolvedArtifacts = 0;
+    let total = 0, clicked = 0, previews = 0, frozenArtifacts = 0, inaccessibleArtifacts = 0;
+    let reachedBottom = false;
     let cancel = false;
     const attempted = new Set();
     window.cancelClaudePDF = () => { cancel = true; };
@@ -703,32 +667,6 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
         await tick();
       }
     }
-    async function enrichCards(source, clone) {
-      if (!cfg.captureArtifacts) return;
-      const cards = [...source.querySelectorAll('[data-testid="file-card-block"]')];
-      for (let i = 0; i < cards.length; i++) {
-        const card = cards[i];
-        if (!isPreviewCard(card)) continue;
-        if (++previews > cfg.maxArtifactPreviews) return;
-        const open = card.querySelector('[data-testid="file-card-open"]');
-        const name = safeText(open?.getAttribute('aria-label') || card.textContent).slice(0, 120);
-        if (!open || !capture) { unresolvedArtifacts++; continue; }
-        try {
-          // Open the genuine Claude preview, not its source code.
-          open.click();
-          await delay(Math.max(200, cfg.artifactWait));
-          const frame = previewIframe();
-          if (!frame) { unresolvedArtifacts++; continue; }
-          await delay(200);
-          const shot = snapshotRectangle(capture, frame);
-          if (!shot) { unresolvedArtifacts++; continue; }
-          insertPreview(clone, i, shot, name);
-        } catch (e) {
-          unresolvedArtifacts++;
-          if (cfg.debug) console.warn('Could not capture artifact preview:', name, e);
-        }
-      }
-    }
     async function takeRows() {
       let rows = [...(document.querySelector(LIST)?.querySelectorAll(ROW) || [])];
       // Store renderized rows promptly; virtualizers can recycle them.
@@ -752,18 +690,28 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
           document.querySelector(`${ROW}[data-index="${idx}"]`) || origin : origin;
         const current = sourceOf(after) || src;
         const clone = cloneMessage(current.element, current.kind);
-        // Inline iframes are captured as images: copying their HTML would reset
-        // the interactive state and could display source code or a blank box.
-        if (capture) captureVisibleEmbeddedFrames(current.element, clone, capture);
-        // Artifact previews are stored as screenshots attached to their file card.
-        await enrichCards(current.element, clone);
+        // Preserve current same-origin artifact DOM without screen capture.
+        // Cross-origin frames are kept as native iframes for browser printing.
+        const remaining = Math.max(0, cfg.maxArtifactPreviews - previews);
+        const embedded = preserveEmbeddedFrames(current.element, clone, cfg, remaining);
+        previews += embedded.attempted;
+        frozenArtifacts += embedded.frozen;
+        inaccessibleArtifacts += embedded.unavailable;
         originals.set(key, { idx, kind: current.kind, node: clone });
       }
       return originals.size;
     }
     function complete() {
-      if (!(total > 0) || originals.size < total) return false;
-      for (let i = 0; i < total; i++) if (!originals.has(`i:${i}`)) return false;
+      if (total > 0) {
+        if (originals.size < total) return false;
+        for (let i = 0; i < total; i++) if (!originals.has(`i:${i}`)) return false;
+        return true;
+      }
+      // Older Claude layouts may not expose aria-setsize. Once a complete
+      // top-to-bottom scan finishes, accept a contiguous 0-based row sequence.
+      // A skipped beginning or missing intermediate row still fails closed.
+      if (!cfg.scan || !reachedBottom || !originals.size) return false;
+      for (let i = 0; i < originals.size; i++) if (!originals.has(`i:${i}`)) return false;
       return true;
     }
     const missing = () => {
@@ -802,7 +750,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
             if (before >= limit - 2) {
               await delay(cfg.scrollDelay * 2);
               if (originals.size > beforeCount) { stagnant = 0; continue; }
-              if (++stagnant >= 4) break;
+              if (++stagnant >= 4) { reachedBottom = true; break; }
               continue;
             }
             scrollToY(current, Math.min(limit, before + advance));
@@ -824,7 +772,6 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
         document.documentElement.style.scrollBehavior = restore.htmlBehavior;
         scroll.scrollTop = restore.top;
       } catch (_) {}
-      capture?.stream.getTracks().forEach(t => t.stop());
       delete window.cancelClaudePDF;
       delete window.__claudePdfLightMode;
     }
@@ -880,13 +827,13 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     const warnings = [];
     if (!isFull) warnings.push(`Conversation not verified: ${originals.size} captured; ` +
       `${total || '?'} expected. Missing messages: ${gaps.slice(0,30).join(', ')}${gaps.length>30?'…':''}.`);
-    if (unresolvedArtifacts > 0) warnings.push(
-      `${unresolvedArtifacts} artifact views could not be captured visually. ` +
-      'Cross-origin iframes require explicit browser tab-capture permission.');
+    if (inaccessibleArtifacts > 0) warnings.push(
+      `${inaccessibleArtifacts} cross-origin artifact frames could not be frozen; ` +
+      'the browser will attempt to print their embedded frames directly.');
     if (warnings.length) {
       const alert = doc.createElement('aside'); alert.className = 'cp-warning';
       alert.append(doc.createTextNode(warnings.join(' ')));
-      if (!isFull || unresolvedArtifacts) {
+      if (!isFull) {
         const btn = doc.createElement('button'); btn.textContent = 'Print anyway';
         btn.addEventListener('click', () => out.print()); alert.append(btn);
       }
@@ -903,6 +850,21 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     );
     await timeout(Promise.allSettled(sheets), 5000);
     await timeout(doc.fonts?.ready || Promise.resolve(), 5000);
+    // Wait briefly for embedded previews to settle in the new document.
+    // No permissions are requested, even if an iframe is cross-origin.
+    if (cfg.captureArtifacts && cfg.artifactWait) {
+      const frames = [...main.querySelectorAll('iframe[data-cp-iframe]')];
+      await Promise.race([
+        Promise.allSettled(frames.map(frame => new Promise(resolve => {
+          try {
+            if (frame.contentDocument?.readyState === 'complete') return resolve();
+          } catch (_) { /* Cross-origin readiness is not inspectable. */ }
+          frame.addEventListener('load', resolve, { once: true });
+          frame.addEventListener('error', resolve, { once: true });
+        }))),
+        delay(cfg.artifactWait)
+      ]);
+    }
     // Perform after site CSS and fonts are ready; two passes cover nested cards.
     const layoutRepairs = repairNarrowPrintLayouts(doc, main);
     if (layoutRepairs && cfg.debug) log(`Reflowed ${layoutRepairs} narrow print blocks.`);
@@ -922,16 +884,19 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     doc.getElementById('cp-status')?.remove();
     out.focus();
     log({ captured: originals.size, expected: total || 'unknown',
-      complete: isFull, expandedClicks: clicked, artifactCandidates: previews,
-      artifactSnapshotsUnavailable: unresolvedArtifacts, failedImages,
+      complete: isFull, expandedClicks: clicked, embeddedFrames: previews,
+      embeddedFramesFrozen: frozenArtifacts, inaccessibleArtifactFrames: inaccessibleArtifacts, failedImages,
       missing: gaps.slice(0, 100) });
-    const safeToAutoPrint = isFull && !unresolvedArtifacts && !failedImages;
+    // Do not stop automatic printing for cross-origin iframes or failed images:
+    // they can still appear in the native print output. Missing chat rows are
+    // the only reason to enforce allowPartial=false.
+    const safeToAutoPrint = isFull;
     if (cfg.printAutomatically && (safeToAutoPrint || cfg.allowPartial)) out.print();
-    else if (!safeToAutoPrint) log('Automatic printing skipped because some content is missing. Review the new tab.');
+    else if (!safeToAutoPrint && cfg.printAutomatically) log('Automatic printing skipped: conversation messages are missing. Review the new tab or use allowPartial:true.');
     return { window: out, captured: originals.size, expected: total || null,
-      complete: isFull, visuallyComplete: !unresolvedArtifacts && !failedImages,
-      expanded: clicked, artifactsSeen: previews, failedImages,
-      artifactsNotCaptured: unresolvedArtifacts, missing: gaps };
+      complete: isFull, expanded: clicked, embeddedFrames: previews,
+      embeddedFramesFrozen: frozenArtifacts, crossOriginFrames: inaccessibleArtifacts,
+      failedImages, missing: gaps };
   };
   window.printClaudePDF.validate = function (options = {}) {
     try {

@@ -1,17 +1,17 @@
 # Claude2PDF
 
-### [Printing guide and all configuration options](./Claude%20printing%20script/README.md)
+### [Printing guide and options](./Claude%20printing%20script/README.md)
 
 **[Open `print-cloud-chat.js`](./Claude%20printing%20script/print-cloud-chat.js)**
 
-Export a Claude conversation to a multipage PDF from your browser console. The script attempts to preserve formatting, code, images, file cards, and expanded steps.
+Export the full Claude chat to a multipage PDF, using a white A4 layout and 5 mm margins by default.
 
-1. Open a chat on [claude.ai](https://claude.ai/).
-2. Open the script above, edit its **configuration at the bottom**, and copy the **entire file**.
-3. Open the browser's **Developer Tools → Console** (`F12` → Console, or `Ctrl+Shift+J`; macOS: `Cmd+Option+J`). Click the `>` input area, paste, and press **Enter**. The export starts automatically.
-4. Choose **Save as PDF**. Disable **Headers and footers** and enable **Background graphics** in the browser's print settings.
+1. Open the conversation at [claude.ai](https://claude.ai/).
+2. Edit the `printClaudePDF({ ... })` options **at the bottom** of the script, then copy the entire file.
+3. Open **Developer Tools → Console** (`F12` → Console, or `Ctrl+Shift+J`; macOS: `Cmd+Option+J`). Click the `>` input, paste, and press **Enter**.
+4. The script automatically opens a **loading tab**, reads the original conversation, and opens the browser **Print** dialog. Choose **Save as PDF**.
 
-Default output: **A4**, **light theme**, **5 mm margins**. Browser security and dynamically loaded content can prevent exact capture of some interactive artifacts.
+**No screen-sharing or screen-recording permission is ever requested by the script.** The browser controls the printer destination; JavaScript cannot preselect Save as PDF. In print settings, disable **Headers and footers** and enable **Background graphics**.
 
 ## License
 
