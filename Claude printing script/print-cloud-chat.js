@@ -1,12 +1,12 @@
 /*
  * Claude2PDF v5.1 — configurable, validated, browser-console PDF export.
- * Paste this entire file into DevTools Console while a Claude chat is open.
+ * Edit the options in the call at the END of this file, then paste the
+ * entire file into DevTools Console while a Claude chat is open.
+ * Printing starts automatically after pasting and pressing Enter.
  *
- * Run:      await imprimirClaudePDF();
- * Configure: await imprimirClaudePDF({ page: 'A4', margin: '5mm', theme: 'light' });
- * Help:     imprimirClaudePDF.help();
- * Validate: imprimirClaudePDF.validate({ page: 'A4', retries: 2 });
- * Cancel:   cancelarImpresionClaudePDF();
+ * Help (after loading):     imprimirClaudePDF.help();
+ * Validate (after loading): imprimirClaudePDF.validate({ page: 'A4', retries: 2 });
+ * Cancel an active scan:    cancelarImpresionClaudePDF();
  *
  * Defaults: portrait A4, white page, 5 mm margins, one H1 title.
  * IMPORTANT: Browser-generated headers, footers and page numbers must be
@@ -866,3 +866,20 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
   log('Function registered: imprimirClaudePDF({ page:"A4", margin:"5mm", theme:"light" }).');
   log('Help and parameters: imprimirClaudePDF.help().');
 })();
+
+// ---------------------------------------------------------------------------
+// USER CONFIGURATION — edit these values before pasting into the console.
+// This call runs automatically, so there is no second command to enter.
+// Run imprimirClaudePDF.help() afterwards to see all supported options.
+// ---------------------------------------------------------------------------
+imprimirClaudePDF({
+  page: "A4",
+  margin: "5mm",
+  theme: "light",
+  scan: true,
+  retries: 2,
+  allowPartial: false,
+  printAutomatically: true
+}).catch(error => {
+  console.error("[Claude PDF] Export failed:", error);
+});
