@@ -912,6 +912,67 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
   log('Help and parameters: printClaudePDF.help().');
 })();
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // ---------------------------------------------------------------------------
 // USER CONFIGURATION — edit these values before pasting into the console.
 // This call runs automatically, so there is no second command to enter.
