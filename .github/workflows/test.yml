@@ -1,0 +1,29 @@
+name: Browser regression tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  expansion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check JavaScript syntax
+        run: node --check 'Claude printing script/print-cloud-chat.js'
+      - name: Install browser test dependencies
+        run: |
+          npm install --prefix "${RUNNER_TEMP}/claude2pdf-test-deps" --no-save --package-lock=false playwright@1.62.1
+          node "${RUNNER_TEMP}/claude2pdf-test-deps/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Test nested expansion and print completeness
+        env:
+          NODE_PATH: ${{ runner.temp }}/claude2pdf-test-deps/node_modules
+        run: node --test tests/expansion.test.cjs
