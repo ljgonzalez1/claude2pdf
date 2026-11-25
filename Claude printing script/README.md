@@ -17,8 +17,8 @@ printClaudePDF({
   scan: true,
   retries: 2,
   expand: true,
-  expandDelay: 300,
-  expandWait: 1500,
+  expandDelay: 150,
+  expandWait: 170,
   expandRetries: 3,
   allowPartial: false,
   printAutomatically: true
@@ -43,8 +43,8 @@ All options are optional. Bad values or unknown names produce an error listing a
 | `retries` | `3` | Integer `0–6` — additional history passes |
 | `maxScrollSteps` | `18000` | Integer `1–100000` — per-pass scroll limit |
 | `expand` | `true` | Boolean — open recognized disclosures at every nesting level, including thoughts, tool steps, native details, and show-more sections |
-| `expandDelay` | `300` | Integer `0–10000` — minimum ms after each expansion click |
-| `expandWait` | `1500` | Integer `0–60000` — ms of DOM quiet before looking for more descendants or capturing a message; increase for slow conversations |
+| `expandDelay` | `150` | Integer `0–10000` — minimum ms after each expansion click |
+| `expandWait` | `170` | Integer `0–60000` — ms of DOM quiet before looking for more descendants or capturing a message; increase for slow conversations |
 | `expandRetries` | `3` | Integer `0–10` — additional attempts when a control stays closed without revealing content |
 | `maxExpansionClicks` | `18000` | Integer `0–100000` — expansion click limit |
 | `captureArtifacts` | `true` | Boolean — preserve accessible iframe DOM as currently rendered, without screen-sharing permissions |
