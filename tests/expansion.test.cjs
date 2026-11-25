@@ -129,6 +129,66 @@ test('retries an ignored click without permanently suppressing the control', asy
   assert.equal(result.counts.retry, 2);
 });
 
+test('recognizes filled SVG chevrons and transformed down-facing base icons', async () => {
+  const result = await run(row(`<button id="filled"><svg viewBox="0 0 16 16"><path d="M4 2 L5 1 L12 8 L5 15 L4 14 L10 8 Z"/></svg></button><p hidden>Filled payload</p>
+    <button id="rotated"><span style="display:inline-block;transform:rotate(-90deg)"><svg viewBox="0 0 16 16"><path d="M3 5 L8 10 L13 5"/></svg></span></button><p hidden>Rotated payload</p>`), () => {
+    document.getElementById('filled').onclick = event => {
+      window.counts.filled = (window.counts.filled || 0) + 1;
+      event.currentTarget.querySelector('svg').style.transform = 'rotate(90deg)';
+      event.currentTarget.nextElementSibling.hidden = false;
+    };
+    document.getElementById('rotated').onclick = event => {
+      window.counts.rotated = (window.counts.rotated || 0) + 1;
+      event.currentTarget.querySelector('span').style.transform = 'none';
+      event.currentTarget.nextElementSibling.hidden = false;
+    };
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.counts, { filled: 1, rotated: 1 });
+  assert.match(result.text, /Filled payload/);
+  assert.match(result.text, /Rotated payload/);
+});
+
+test('preserves the panel when a non-button trigger contains its expanded content', async () => {
+  const result = await run(row(`<div role="button" aria-expanded="false" data-cds-row-toggle>
+    Parent heading<p hidden>Inside-wrapper payload</p></div>`), () => {
+    document.querySelector('[role="button"]').onclick = event => {
+      event.currentTarget.setAttribute('aria-expanded', 'true');
+      event.currentTarget.querySelector('p').hidden = false;
+    };
+  });
+  assert.equal(result.complete, true);
+  assert.match(result.text, /Inside-wrapper payload/);
+});
+
+test('opens a plain ARIA container before its hidden nested button', async () => {
+  const result = await run(row(`<div aria-expanded="false" id="plain">Parent
+    <div hidden><button aria-expanded="false">Child</button><p hidden>Plain ARIA payload</p></div></div>`), () => {
+    document.getElementById('plain').onclick = event => {
+      if (event.target !== event.currentTarget) return;
+      window.counts.parent = (window.counts.parent || 0) + 1;
+      event.currentTarget.setAttribute('aria-expanded', 'true');
+      event.currentTarget.querySelector('div').hidden = false;
+    };
+    document.querySelector('button').onclick = event => {
+      window.counts.child = (window.counts.child || 0) + 1;
+      event.currentTarget.setAttribute('aria-expanded', 'true');
+      event.currentTarget.nextElementSibling.hidden = false;
+    };
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.counts, { parent: 1, child: 1 });
+  assert.match(result.text, /Plain ARIA payload/);
+});
+
+test('does not click a hidden stale chevron inside an already open header', async () => {
+  const result = await run(row(`<button><span hidden>›</span><span>⌄</span></button><p>Already visible</p>`), () => {
+    document.querySelector('button').onclick = () => { window.counts.unwanted = 1; };
+  });
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.counts, {});
+});
+
 test('reports stuck controls and blocks automatic printing after bounded retries', async () => {
   const result = await run(row('<button aria-expanded="false">Stuck</button>'), () => {
     document.querySelector('button').onclick = () => { window.counts.stuck = (window.counts.stuck || 0) + 1; };

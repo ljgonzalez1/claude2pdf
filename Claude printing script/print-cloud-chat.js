@@ -239,14 +239,51 @@
     '[data-cds*="Thinking" i]', '[data-cds*="Reasoning" i]'
   ].join(',');
 
+  function chevronVector(shape) {
+    const length = shape.getTotalLength();
+    if (!length) return null;
+    const a = shape.getPointAtLength(0), b = shape.getPointAtLength(length / 2);
+    const c = shape.getPointAtLength(length);
+    const x = b.x - (a.x + c.x) / 2, y = b.y - (a.y + c.y) / 2;
+    if (Math.abs(a.x - c.x) < Math.abs(x) * .25 && Math.abs(a.y - c.y) > Math.abs(x)) return [x, 0];
+    if (Math.abs(a.y - c.y) < Math.abs(y) * .25 && Math.abs(a.x - c.x) > Math.abs(y)) return [0, y];
+    // Filled chevrons are closed outlines: the first and last points coincide.
+    // Their two arms converge at the middle; a box or play triangle does not.
+    const points = Array.from({ length: 64 }, (_, i) => {
+      const p = shape.getPointAtLength(length * i / 64); return [p.x, p.y];
+    });
+    const average = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+    for (const axis of [0, 1]) for (const sign of [1, -1]) {
+      const along = points.map(p => p[axis] * sign), across = points.map(p => p[1 - axis]);
+      const low = Math.min(...across), span = Math.max(...across) - low;
+      const width = Math.max(...along) - Math.min(...along);
+      if (!span || width < span * .2 || width > span) continue;
+      const edgeA = [], edgeB = [], middle = [];
+      points.forEach((p, i) => {
+        const position = (across[i] - low) / span;
+        if (position <= .15) edgeA.push(along[i]);
+        if (position >= .85) edgeB.push(along[i]);
+        if (Math.abs(position - .5) <= .08) middle.push(along[i]);
+      });
+      if (!edgeA.length || !edgeB.length || !middle.length) continue;
+      if (Math.abs(average(edgeA) - average(edgeB)) < width * .3 &&
+          average(middle) - Math.max(average(edgeA), average(edgeB)) > width * .45 &&
+          Math.max(...middle) - Math.min(...middle) < width * .6) {
+        return axis === 0 ? [sign, 0] : [0, sign];
+      }
+    }
+    return null;
+  }
+
   // Some Claude headers have neither aria-expanded nor an accessible label.
   // Recognize their own chevron (including a bare SVG or a rotated icon span).
   // A nested step's icon must never be mistaken for its parent's state.
   function closedChevron(control) {
     for (const icon of [control, ...control.querySelectorAll('svg,span,[data-icon],[class*="chevron" i]')]) {
+      if (!visible(icon)) continue;
       const owner = icon.closest(TOGGLE);
       if (owner && owner !== control) continue;
-      let vector = null;
+      let vector = null, screenTransformed = false;
       const metadata = [icon.getAttribute('class'), icon.getAttribute('data-icon'),
         icon.getAttribute('data-testid'), icon.getAttribute('aria-label'),
         icon.querySelector('use')?.getAttribute('href'),
@@ -260,23 +297,28 @@
         const shapes = icon.querySelectorAll('path,polyline,line,polygon,circle,rect');
         if (shapes.length === 1 && shapes[0].matches('path,polyline')) {
           try {
-            const shape = shapes[0], length = shape.getTotalLength();
-            const a = shape.getPointAtLength(0), b = shape.getPointAtLength(length / 2);
-            const c = shape.getPointAtLength(length);
-            const x = b.x - (a.x + c.x) / 2, y = b.y - (a.y + c.y) / 2;
-            // An open, two-arm chevron: aligned endpoints and a distinct tip.
-            if (Math.abs(a.x - c.x) < Math.abs(x) * .25 && Math.abs(a.y - c.y) > Math.abs(x)) vector = [x, 0];
-            else if (Math.abs(a.y - c.y) < Math.abs(y) * .25 && Math.abs(a.x - c.x) > Math.abs(y)) vector = [0, y];
+            const shape = shapes[0];
+            vector = chevronVector(shape);
             if (vector) {
-              const matrix = shape.getCTM();
-              if (matrix) vector = [matrix.a * vector[0] + matrix.c * vector[1], matrix.b * vector[0] + matrix.d * vector[1]];
+              const matrix = shape.getScreenCTM();
+              if (matrix) {
+                vector = [matrix.a * vector[0] + matrix.c * vector[1], matrix.b * vector[0] + matrix.d * vector[1]];
+                screenTransformed = true;
+              }
             }
           } catch (_) { /* A detached or non-geometric SVG is not a chevron. */ }
         }
       }
       if (!vector) continue;
-      // SVG getCTM already includes the SVG's transform; spans still need CSS.
-      for (let el = icon.localName === 'svg' && !named ? icon.parentElement : icon; el; el = el.parentElement) {
+      if (icon.localName === 'svg' && !screenTransformed) {
+        const m = icon.getScreenCTM();
+        if (m) {
+          vector = [m.a * vector[0] + m.c * vector[1], m.b * vector[0] + m.d * vector[1]];
+          screenTransformed = true;
+        }
+      }
+      // Screen CTMs include ancestor CSS transforms; do not apply them twice.
+      for (let el = screenTransformed ? null : icon; el; el = el.parentElement) {
         try {
           const transform = getComputedStyle(el).transform;
           if (transform && transform !== 'none') {
@@ -300,8 +342,6 @@
         if (el.localName === 'details') return !el.open;
         if (el.closest('a[href],[role="link"],[inert],[data-testid="message-actions"],[data-testid="user-message-actions"],[data-testid="file-card-open"],[data-cds="CardLink"]') ||
             (el.hasAttribute('aria-haspopup') && el.getAttribute('aria-haspopup') !== 'false')) return false;
-        // Avoid clicking both a stretched row wrapper and its actual trigger.
-        if (!el.matches('button,[role="button"]') && el.querySelector(TOGGLE)) return false;
         const expanded = el.getAttribute('aria-expanded');
         if (expanded === 'true') return false;
         if (expanded === 'false') return true;
@@ -311,6 +351,8 @@
           if (/^(open|expanded|true)$/.test(state)) return false;
           if (/^(closed|collapsed|false)$/.test(state)) return true;
         }
+        // Avoid clicking both a stretched row wrapper and its actual trigger.
+        if (!el.matches('button,[role="button"]') && el.querySelector(TOGGLE)) return false;
         const label = safeText(el.getAttribute('aria-label') || el.textContent);
         if (/^(mostrar (más|todo|pasos)|ver más|expandir|desplegar|show more|view more|see more|expand all|more steps)(\b|$)/i.test(label)) {
           return el.matches(TOGGLE);
