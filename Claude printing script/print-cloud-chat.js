@@ -1,5 +1,5 @@
 /*
- * Claude2PDF v8 — automatic, permission-free, browser-console PDF export.
+ * Claude2PDF v9 — automatic, permission-free, browser-console PDF export.
  * Edit the options in the call at the END of this file, then paste the
  * entire file into DevTools Console while a Claude chat is open.
  * Printing starts automatically after pasting and pressing Enter.
@@ -28,11 +28,13 @@
     showMessageRoles: true,
     copySiteStyles: true,
     scan: true,
-    scrollDelay: 125,
+    scrollDelay: 250,
     retries: 3,
     maxScrollSteps: 18000,
     expand: true,
-    expandDelay: 75,
+    expandDelay: 300,
+    expandWait: 1500,
+    expandRetries: 3,
     maxExpansionClicks: 18000,
     captureArtifacts: true,
     artifactWait: 850,
@@ -63,8 +65,10 @@
     scrollDelay: { accepted: 'integer 0..10000 (milliseconds)', test: integer(0, 10000), meaning: 'Delay between scroll steps.' },
     retries: { accepted: 'integer 0..6', test: integer(0, 6), meaning: 'Additional full-history passes after the first pass.' },
     maxScrollSteps: { accepted: 'integer 1..100000', test: integer(1, 100000), meaning: 'Maximum scroll steps per pass.' },
-    expand: { accepted: 'true | false', test: boolean, meaning: 'Expand recognized reasoning, tool steps and show-more sections.' },
-    expandDelay: { accepted: 'integer 0..10000 (milliseconds)', test: integer(0, 10000), meaning: 'Delay after an expansion click.' },
+    expand: { accepted: 'true | false', test: boolean, meaning: 'Expand nested disclosures, reasoning, tool steps and show-more sections.' },
+    expandDelay: { accepted: 'integer 0..10000 (milliseconds)', test: integer(0, 10000), meaning: 'Minimum delay after an expansion click.' },
+    expandWait: { accepted: 'integer 0..60000 (milliseconds)', test: integer(0, 60000), meaning: 'Wait for this much DOM quiet before looking for more nested controls or capturing a message.' },
+    expandRetries: { accepted: 'integer 0..10', test: integer(0, 10), meaning: 'Additional attempts per control if a click produces no expansion progress.' },
     maxExpansionClicks: { accepted: 'integer 0..100000', test: integer(0, 100000), meaning: 'Maximum total expansion clicks.' },
     captureArtifacts: { accepted: 'true | false', test: boolean, meaning: 'Preserve accessible embedded artifact DOM in its current state; no screen-sharing permissions.' },
     artifactWait: { accepted: 'integer 0..60000 (milliseconds)', test: integer(0, 60000), meaning: 'Maximum time to allow print-tab embedded artifact frames to settle.' },
@@ -228,37 +232,138 @@
     return `rgb(${c.map(v => Math.round(v * lo)).join(',')})`;
   }
 
-  // Expand only recognized thought/tool/step controls, not unrelated dialogs.
+  const TOGGLE = 'button,[role="button"],[aria-expanded],[data-cds-row-toggle],[data-cds-row-toggle-stretched]';
+  const REASONING = [
+    '[data-cds="TurnStatus"]', '[data-cds="TurnStatusStep"]',
+    '[data-testid*="thinking" i]', '[data-testid*="reasoning" i]',
+    '[data-cds*="Thinking" i]', '[data-cds*="Reasoning" i]'
+  ].join(',');
+
+  // Some Claude headers have neither aria-expanded nor an accessible label.
+  // Recognize their own chevron (including a bare SVG or a rotated icon span).
+  // A nested step's icon must never be mistaken for its parent's state.
+  function closedChevron(control) {
+    for (const icon of [control, ...control.querySelectorAll('svg,span,[data-icon],[class*="chevron" i]')]) {
+      const owner = icon.closest(TOGGLE);
+      if (owner && owner !== control) continue;
+      let vector = null;
+      const metadata = [icon.getAttribute('class'), icon.getAttribute('data-icon'),
+        icon.getAttribute('data-testid'), icon.getAttribute('aria-label'),
+        icon.querySelector('use')?.getAttribute('href'),
+        icon.querySelector('use')?.getAttribute('xlink:href')].join(' ');
+      const named = /(?:chevron|caret|triangle)[-_\s]*(right|down|left|up)/i.exec(metadata);
+      const symbol = icon.childElementCount ? '' : safeText(icon.textContent);
+      if (named) vector = { right: [1, 0], down: [0, 1], left: [-1, 0], up: [0, -1] }[named[1].toLowerCase()];
+      else if (/^[>›❯▸▶]$/.test(symbol)) vector = [1, 0];
+      else if (/^[⌄⌃˅∨▾▼]$/.test(symbol)) vector = [0, symbol === '⌃' ? -1 : 1];
+      else if (icon.localName === 'svg') {
+        const shapes = icon.querySelectorAll('path,polyline,line,polygon,circle,rect');
+        if (shapes.length === 1 && shapes[0].matches('path,polyline')) {
+          try {
+            const shape = shapes[0], length = shape.getTotalLength();
+            const a = shape.getPointAtLength(0), b = shape.getPointAtLength(length / 2);
+            const c = shape.getPointAtLength(length);
+            const x = b.x - (a.x + c.x) / 2, y = b.y - (a.y + c.y) / 2;
+            // An open, two-arm chevron: aligned endpoints and a distinct tip.
+            if (Math.abs(a.x - c.x) < Math.abs(x) * .25 && Math.abs(a.y - c.y) > Math.abs(x)) vector = [x, 0];
+            else if (Math.abs(a.y - c.y) < Math.abs(y) * .25 && Math.abs(a.x - c.x) > Math.abs(y)) vector = [0, y];
+            if (vector) {
+              const matrix = shape.getCTM();
+              if (matrix) vector = [matrix.a * vector[0] + matrix.c * vector[1], matrix.b * vector[0] + matrix.d * vector[1]];
+            }
+          } catch (_) { /* A detached or non-geometric SVG is not a chevron. */ }
+        }
+      }
+      if (!vector) continue;
+      // SVG getCTM already includes the SVG's transform; spans still need CSS.
+      for (let el = icon.localName === 'svg' && !named ? icon.parentElement : icon; el; el = el.parentElement) {
+        try {
+          const transform = getComputedStyle(el).transform;
+          if (transform && transform !== 'none') {
+            const m = new DOMMatrixReadOnly(transform), [x, y] = vector;
+            vector = [m.a * x + m.c * y, m.b * x + m.d * y];
+          }
+        } catch (_) {}
+        if (el === control) break;
+      }
+      const direction = getComputedStyle(control).direction === 'rtl' ? -1 : 1;
+      if (vector[0] * direction > Math.abs(vector[1]) * 1.5) return true;
+    }
+    return false;
+  }
+
+  // Stay within the transcript. Exclude navigation, menus and file openers.
   function expandableButtons(row) {
-    return [...row.querySelectorAll('button[aria-expanded="false"],button[aria-label],details:not([open])')]
+    return [...row.querySelectorAll(`${TOGGLE},details,[onclick],[class*="cursor-pointer"]`)]
       .filter(el => {
         if (!visible(el)) return false;
-        if (el.localName === 'details') return true;
-        if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
-        const inReasoning = !!el.closest([
-          '[data-cds="TurnStatus"]', '[data-cds="TurnStatusStep"]',
-          '[data-testid*="thinking" i]', '[data-testid*="reasoning" i]',
-          '[data-cds*="Thinking" i]', '[data-cds*="Reasoning" i]'
-        ].join(','));
+        if (el.localName === 'details') return !el.open;
+        if (el.closest('a[href],[role="link"],[inert],[data-testid="message-actions"],[data-testid="user-message-actions"],[data-testid="file-card-open"],[data-cds="CardLink"]') ||
+            (el.hasAttribute('aria-haspopup') && el.getAttribute('aria-haspopup') !== 'false')) return false;
+        // Avoid clicking both a stretched row wrapper and its actual trigger.
+        if (!el.matches('button,[role="button"]') && el.querySelector(TOGGLE)) return false;
+        const expanded = el.getAttribute('aria-expanded');
+        if (expanded === 'true') return false;
+        if (expanded === 'false') return true;
         const toggle = el.matches('[data-cds-row-toggle]') || el.hasAttribute('data-cds-row-toggle-stretched');
-        if (inReasoning && toggle && el.getAttribute('aria-expanded') === 'false') return true;
+        const state = el.getAttribute('data-state') || el.getAttribute('data-expanded');
+        if (toggle || (el.closest(REASONING) && el.hasAttribute('aria-controls'))) {
+          if (/^(open|expanded|true)$/.test(state)) return false;
+          if (/^(closed|collapsed|false)$/.test(state)) return true;
+        }
         const label = safeText(el.getAttribute('aria-label') || el.textContent);
         if (/^(mostrar (más|todo|pasos)|ver más|expandir|desplegar|show more|view more|see more|expand all|more steps)(\b|$)/i.test(label)) {
-          return el.closest('[data-testid="user-message"],[data-testid="assistant-message"], [data-user-scope], [data-reply-scope]');
+          return el.matches(TOGGLE);
         }
-        return false;
+        return closedChevron(el);
       });
   }
   function toggleKey(el) {
-    const ancestor = el.closest('[data-step-key],[data-item-key]');
-    const key = ancestor?.getAttribute('data-step-key') || ancestor?.getAttribute('data-item-key');
-    if (key) return key;
+    // Include the complete DOM path: siblings and nested controls often share
+    // a step/item key, a label, or even aria-controls during React rendering.
     const row = el.closest(ROW);
-    const i = row ? rowIndex(row) : null;
-    const controls = el.getAttribute('aria-controls') || el.getAttribute('aria-labelledby');
-    if (controls) return `${i}:control:${controls}`;
-    const position = row ? [...row.querySelectorAll('button,details')].indexOf(el) : 0;
-    return `${i}:${position}:${safeText(el.textContent).slice(0, 100)}`;
+    const path = [];
+    for (let node = el; node && node !== row; node = node.parentElement) {
+      path.push(`${node.localName}:${[...node.parentElement.children].indexOf(node)}`);
+    }
+    return `${row ? rowIndex(row) : '?'}:${path.reverse().join('/')}`;
+  }
+
+  function liveRow(index, fallback) {
+    const rows = [...(document.querySelector(LIST)?.querySelectorAll(ROW) || [])];
+    return NUM(index) ? rows.find(row => rowIndex(row) === index) || null
+      : fallback?.isConnected ? fallback : null;
+  }
+
+  async function settleExpansion(resolveRow, cfg, assertRunning, afterClick) {
+    const start = Date.now();
+    let changed = start, observed = null;
+    const observer = new MutationObserver(() => { changed = Date.now(); });
+    const quiet = cfg.expandWait, minimum = afterClick ? cfg.expandDelay : 0;
+    // Bound continuously mutating/spinning UI; report it as incomplete.
+    const maximum = Math.max(10000, quiet * 4, minimum * 2);
+    try {
+      do {
+        assertRunning();
+        const row = resolveRow();
+        if (!row) return false;
+        if (row !== observed) {
+          observer.disconnect(); observed = row; changed = Date.now();
+          observer.observe(row, { subtree: true, childList: true, characterData: true,
+            attributes: true, attributeFilter: ['aria-expanded', 'aria-busy', 'aria-disabled',
+              'data-state', 'data-expanded', 'open', 'hidden', 'disabled', 'class', 'style'] });
+        }
+        const now = Date.now();
+        const busy = row.matches('[aria-busy="true"]') || !!row.querySelector('[aria-busy="true"]');
+        if (!busy && now - start >= minimum && now - changed >= quiet) {
+          await tick();
+          // A render may have landed during the animation frames.
+          if (resolveRow() === row && Date.now() - changed >= quiet) return true;
+        }
+        if (now - start >= maximum) return false;
+        await delay(Math.max(20, Math.min(100, quiet || minimum || 20)));
+      } while (true);
+    } finally { observer.disconnect(); }
   }
 
   // Keep the dimensions of file previews, SVGs, icons, and card content.
@@ -347,6 +452,13 @@
     ].join(',')).forEach(el => el.remove());
     // Keep file cards in their original markup; remove only their action controls.
     cloned.querySelectorAll('button,[role="button"]').forEach(el => {
+      // A role=button wrapper can contain its entire expanded panel. Preserve
+      // that content instead of deleting it together with the trigger.
+      if (el.localName !== 'button' && el.getAttribute('aria-expanded') === 'true' &&
+          el.querySelector('p,pre,details,[role="region"],[data-cds="TurnStatusStep"]')) {
+        for (const name of ['role', 'tabindex', 'onclick', 'data-cds-row-toggle', 'data-cds-row-toggle-stretched']) el.removeAttribute(name);
+        return;
+      }
       if (el.matches('[data-testid="file-card-open"],[data-cds="CardLink"]')) {
         el.removeAttribute('role'); el.removeAttribute('tabindex');
         return;
@@ -632,76 +744,87 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     let total = 0, clicked = 0, previews = 0, frozenArtifacts = 0, inaccessibleArtifacts = 0;
     let reachedBottom = false;
     let cancel = false;
-    const attempted = new Set();
+    let capturePass = 0, captureError = null;
     window.cancelClaudePDF = () => { cancel = true; };
     function assertRunning() {
       if (cancel || out.closed) throw Error('Export canceled.');
     }
     async function expandOne(row) {
-      if (!cfg.expand) return;
+      if (!cfg.expand) return { complete: true, remaining: 0 };
       const startKey = rowIndex(row);
-      for (let round = 0; round < 150; round++) {
+      const resolveRow = () => liveRow(startKey, row);
+      const attempts = new Map();
+      let afterClick = false, previous = null;
+      // Re-query after EVERY click. Expanding a parent can replace its children,
+      // reveal further levels, or invalidate all previously collected buttons.
+      while (true) {
         assertRunning();
-        const live = NUM(startKey)
-          ? document.querySelector(`${ROW}[data-rs-index="${startKey}"]`) ||
-            document.querySelector(`${ROW}[data-index="${startKey}"]`)
-          : row;
-        if (!live?.isConnected) break;
-        const targets = expandableButtons(live).filter(el => !attempted.has(toggleKey(el)));
-        if (!targets.length) break;
-        let any = false;
-        for (const candidate of targets.slice(0, 24)) {
-          assertRunning();
-          if (clicked >= cfg.maxExpansionClicks) return;
-          if (!candidate.isConnected || !visible(candidate)) continue;
-          const key = toggleKey(candidate);
-          attempted.add(key);
-          try {
-            if (candidate.localName === 'details') candidate.open = true;
-            else candidate.click();
-            clicked++; any = true;
-          } catch (err) { if (cfg.debug) console.warn('Could not expand:', key, err); }
-          await delay(Math.max(40, cfg.expandDelay));
+        const settled = await settleExpansion(resolveRow, cfg, assertRunning, afterClick);
+        const live = resolveRow();
+        if (!live) return { complete: false, remaining: 1, reason: 'Message was recycled during expansion' };
+        const targets = expandableButtons(live);
+        if (!settled) return { complete: false, remaining: Math.max(1, targets.length), reason: 'Message did not finish rendering' };
+        // Show-more controls can legitimately take many clicks. Only failed
+        // attempts consume retries; newly revealed content resets that count.
+        const progress = safeText(live.textContent) + ':' + live.querySelectorAll('*').length;
+        if (previous && previous.progress !== progress) attempts.delete(previous.key);
+        if (!targets.length) return { complete: true, remaining: 0 };
+        if (clicked >= cfg.maxExpansionClicks) {
+          return { complete: false, remaining: targets.length, reason: 'Expansion click limit reached' };
         }
-        if (!any) break;
-        await tick();
+        const candidate = targets.find(el => !el.matches(':disabled,[aria-disabled="true"]') &&
+          (attempts.get(toggleKey(el)) || 0) <= cfg.expandRetries);
+        if (!candidate) return { complete: false, remaining: targets.length, reason: 'Controls stayed closed or disabled after retries' };
+        const key = toggleKey(candidate);
+        attempts.set(key, (attempts.get(key) || 0) + 1);
+        previous = { key, progress };
+        status(`Messages ${originals.size}${total ? '/' + total : ''}; ` +
+          `expanding message ${NUM(startKey) ? startKey + 1 : '?'}; clicks ${clicked + 1}`);
+        try {
+          clicked++;
+          if (candidate.localName === 'details') candidate.open = true;
+          else candidate.click();
+        } catch (err) { if (cfg.debug) console.warn('Could not expand:', key, err); }
+        afterClick = true;
       }
     }
     async function takeRows() {
-      let rows = [...(document.querySelector(LIST)?.querySelectorAll(ROW) || [])];
+      const rows = [...(document.querySelector(LIST)?.querySelectorAll(ROW) || [])];
       // Store renderized rows promptly; virtualizers can recycle them.
       for (const initial of rows) {
         assertRunning();
         const idx = rowIndex(initial);
         const size = rowTotal(initial);
         if (size && size > total) total = size;
-        const origin = NUM(idx)
-          ? document.querySelector(`${ROW}[data-rs-index="${idx}"]`) ||
-            document.querySelector(`${ROW}[data-index="${idx}"]`) || initial
-          : initial;
+        const origin = liveRow(idx, initial);
+        if (!origin) continue;
         const src = sourceOf(origin);
         if (!src) continue;
         const key = NUM(idx) ? `i:${idx}` : `u:${origin.getAttribute('data-item-key') || originals.size}`;
-        // Capture once if complete; expanding may otherwise increase content later.
-        if (originals.has(key)) continue;
-        await expandOne(origin);
-        const after = NUM(idx) ?
-          document.querySelector(`${ROW}[data-rs-index="${idx}"]`) ||
-          document.querySelector(`${ROW}[data-index="${idx}"]`) || origin : origin;
-        const current = sourceOf(after) || src;
+        const previous = originals.get(key);
+        // Revisit changed or remounted messages. A previous capture is not
+        // proof that late-rendered nested controls have already been expanded.
+        if (previous?.sourceHTML === origin.outerHTML &&
+            (previous.expansion.complete || previous.pass === capturePass)) continue;
+        const expansion = await expandOne(origin);
+        const after = liveRow(idx, origin);
+        const current = after && sourceOf(after);
+        if (!current) continue; // Never overwrite a good capture with a recycled row.
         const clone = cloneMessage(current.element, current.kind);
         // Preserve current same-origin artifact DOM without screen capture.
         // Cross-origin frames are kept as native iframes for browser printing.
-        const remaining = Math.max(0, cfg.maxArtifactPreviews - previews);
+        const old = previous?.embedded || { attempted: 0, frozen: 0, unavailable: 0 };
+        const remaining = Math.max(0, cfg.maxArtifactPreviews - previews + old.attempted);
         const embedded = preserveEmbeddedFrames(current.element, clone, cfg, remaining);
-        previews += embedded.attempted;
-        frozenArtifacts += embedded.frozen;
-        inaccessibleArtifacts += embedded.unavailable;
-        originals.set(key, { idx, kind: current.kind, node: clone });
+        previews += embedded.attempted - old.attempted;
+        frozenArtifacts += embedded.frozen - old.frozen;
+        inaccessibleArtifacts += embedded.unavailable - old.unavailable;
+        originals.set(key, { idx, kind: current.kind, node: clone, embedded, expansion,
+          sourceHTML: after.outerHTML, pass: capturePass });
       }
       return originals.size;
     }
-    function complete() {
+    function historyComplete() {
       if (total > 0) {
         if (originals.size < total) return false;
         for (let i = 0; i < total; i++) if (!originals.has(`i:${i}`)) return false;
@@ -714,6 +837,8 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
       for (let i = 0; i < originals.size; i++) if (!originals.has(`i:${i}`)) return false;
       return true;
     }
+    const expansionsComplete = () => !cfg.expand || [...originals.values()].every(entry => entry.expansion.complete);
+    const complete = () => !captureError && historyComplete() && expansionsComplete();
     const missing = () => {
       const result = [];
       for (let i = 0; i < total; i++) if (!originals.has(`i:${i}`)) result.push(i + 1);
@@ -728,6 +853,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     try {
       if (cfg.scan) {
         for (let pass = 0; pass <= cfg.retries && !complete(); pass++) {
+          capturePass = pass;
           assertRunning();
           let current = getScroll(document.querySelector(LIST) || list);
           scrollToY(current, 0);
@@ -765,6 +891,7 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     } catch (err) {
       console.error('[Claude PDF] Capture interrupted:', err);
       if (cancel || out.closed) { if (!out.closed) out.close(); return { canceled: true }; }
+      captureError = err;
     } finally {
       try {
         scroll.style.scrollBehavior = restore.behavior;
@@ -824,9 +951,15 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     main.replaceChildren(frag);
     const gaps = missing();
     const isFull = complete();
+    const pendingExpansions = [...originals.values()].filter(entry => !entry.expansion.complete)
+      .map(entry => ({ message: NUM(entry.idx) ? entry.idx + 1 : null,
+        remaining: entry.expansion.remaining, reason: entry.expansion.reason }));
     const warnings = [];
-    if (!isFull) warnings.push(`Conversation not verified: ${originals.size} captured; ` +
+    if (!historyComplete()) warnings.push(`Conversation not verified: ${originals.size} captured; ` +
       `${total || '?'} expected. Missing messages: ${gaps.slice(0,30).join(', ')}${gaps.length>30?'…':''}.`);
+    if (pendingExpansions.length) warnings.push('Some sections could not be fully expanded. ' +
+      pendingExpansions.slice(0, 20).map(item => `Message ${item.message ?? '?'}: ${item.reason} (${item.remaining} pending).`).join(' '));
+    if (captureError) warnings.push(`Capture interrupted: ${captureError.message || captureError}.`);
     if (inaccessibleArtifacts > 0) warnings.push(
       `${inaccessibleArtifacts} cross-origin artifact frames could not be frozen; ` +
       'the browser will attempt to print their embedded frames directly.');
@@ -886,15 +1019,16 @@ body { font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important
     log({ captured: originals.size, expected: total || 'unknown',
       complete: isFull, expandedClicks: clicked, embeddedFrames: previews,
       embeddedFramesFrozen: frozenArtifacts, inaccessibleArtifactFrames: inaccessibleArtifacts, failedImages,
-      missing: gaps.slice(0, 100) });
+      missing: gaps.slice(0, 100), pendingExpansions });
     // Do not stop automatic printing for cross-origin iframes or failed images:
-    // they can still appear in the native print output. Missing chat rows are
-    // the only reason to enforce allowPartial=false.
+    // they can still appear in the native print output. Missing chat rows,
+    // unfinished expansion or interrupted capture enforce allowPartial=false.
     const safeToAutoPrint = isFull;
     if (cfg.printAutomatically && (safeToAutoPrint || cfg.allowPartial)) out.print();
-    else if (!safeToAutoPrint && cfg.printAutomatically) log('Automatic printing skipped: conversation messages are missing. Review the new tab or use allowPartial:true.');
+    else if (!safeToAutoPrint && cfg.printAutomatically) log('Automatic printing skipped: messages or expanded sections are incomplete. Review the new tab or use allowPartial:true.');
     return { window: out, captured: originals.size, expected: total || null,
-      complete: isFull, expanded: clicked, embeddedFrames: previews,
+      complete: isFull, messagesComplete: historyComplete(), expansionsComplete: expansionsComplete(),
+      expanded: clicked, pendingExpansions, embeddedFrames: previews,
       embeddedFramesFrozen: frozenArtifacts, crossOriginFrames: inaccessibleArtifacts,
       failedImages, missing: gaps };
   };
@@ -984,8 +1118,13 @@ printClaudePDF({
   theme: "light",
   scan: true,
   retries: 2,
+  expand: true,
+  expandDelay: 300,
+  expandWait: 1500,
+  expandRetries: 3,
   allowPartial: false,
   printAutomatically: true
 }).catch(error => {
   console.error("[Claude PDF] Export failed:", error);
 });
+
