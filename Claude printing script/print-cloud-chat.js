@@ -1161,8 +1161,8 @@ printClaudePDF({
   scan: true,
   retries: 2,
   expand: true,
-  expandDelay: 300,
-  expandWait: 1500,
+  expandDelay: 150,
+  expandWait: 170,
   expandRetries: 3,
   allowPartial: false,
   printAutomatically: true
